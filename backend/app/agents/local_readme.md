@@ -118,6 +118,28 @@ as plain text, never as HTML.
 It shows runs whose folders are on the Render backend. `runs/` is git-ignored, so to publish a
 finished demo run, force-add it (`git add -f runs/<run_id>`) or copy it to the server.
 
+**Cloud hosting in a Docker Sandboxes microVM (`sbx --cloud`):**
+To host the live lab in an isolated cloud microVM where bubblewrap (`bwrap`) can execute with privileged namespaces and the full agent stack runs autonomously:
+
+1. Sign in to Docker Cloud Sandboxes:
+   ```bash
+   sbx login
+   ```
+2. Provision and launch the live lab microVM:
+   ```bash
+   ./docker/sbx-up.sh
+   ```
+   This creates a 4-CPU / 8-GiB cloud sandbox with required network egress allowlists (`api.anthropic.com`, `api.openalex.org`, `mcp.brightdata.com`, etc.), builds `physio-live`, runs the container with `--privileged`, and publishes port 8000.
+3. Note the generated HTTPS URL (from `sbx --cloud ports physio-live`) and set `LAB_REMOTE_URL` on Render so `/api/lab/*` requests forward directly to the sandbox.
+4. Download completed run artifacts or teardown:
+   ```bash
+   # Download completed run folder
+   sbx --cloud cp physio-live:/workspace/runs/<run_id> ./runs/
+   # Or terminate the sandbox and save runs
+   ./docker/sbx-down.sh
+   ```
+
+
 ## Decision ownership
 
 - **The specialist** investigates and advises. It returns its result to the Lead and writes nothing
