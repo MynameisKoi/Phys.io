@@ -5,9 +5,11 @@ import json
 import zipfile
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
 from app.api import live
+from app import main as main_module
 from app.main import app
 
 
@@ -208,4 +210,25 @@ def test_forwarding_unreachable_returns_502(client, monkeypatch):
     res = client.get("/api/lab/status")
     assert res.status_code == 502
     assert "Remote lab sandbox unreachable at http://127.0.0.1:59999" in res.text
+
+
+def test_forwarding_sanitizes_quoted_or_padded_url(client, monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request):
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"can_start": True})
+
+    class MockAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setenv("LAB_REMOTE_URL", '  "sandbox.example.com/ "  ')
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
+
+    res = client.get("/api/lab/status")
+    assert res.status_code == 200
+    assert captured["url"] == "https://sandbox.example.com/api/lab/status"
+
 
