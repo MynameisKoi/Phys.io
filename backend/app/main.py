@@ -28,50 +28,65 @@ app.add_middleware(
 @app.middleware("http")
 async def lab_remote_proxy_middleware(request: Request, call_next):
     """Forward /api/lab/* requests to a remote sandbox (e.g. Docker Sandboxes cloud) when LAB_REMOTE_URL is set."""
-    remote = os.getenv("LAB_REMOTE_URL", "").rstrip("/")
+    raw_remote = os.getenv("LAB_REMOTE_URL", "")
+    remote = raw_remote.strip().strip("\"'").strip().rstrip("/")
     if remote and request.url.path.startswith("/api/lab"):
+        if not remote.startswith(("http://", "https://")):
+            remote = f"https://{remote}"
         target_url = f"{remote}{request.url.path}"
         if request.url.query:
             target_url = f"{target_url}?{request.url.query}"
 
-        headers = {}
-        for k, v in request.headers.items():
-            if k.lower() not in ("host", "content-length"):
-                headers[k] = v
+        hop_by_hop = {
+            "host",
+            "content-length",
+            "connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailers",
+            "transfer-encoding",
+            "upgrade",
+        }
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in hop_by_hop}
 
-        body = await request.body()
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            try:
+        try:
+            body = await request.body()
+            content_payload = body if request.method not in ("GET", "HEAD") and body else None
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
                 remote_resp = await client.request(
                     method=request.method,
                     url=target_url,
                     headers=headers,
-                    content=body,
-                )
-            except (httpx.RequestError, OSError) as exc:
-                return Response(
-                    content=f"Remote lab sandbox unreachable at {remote}: {exc}",
-                    status_code=502,
-                    media_type="text/plain",
+                    content=content_payload,
                 )
 
-        excluded_headers = {
-            "content-encoding",
-            "content-length",
-            "transfer-encoding",
-            "connection",
-        }
-        resp_headers = {
-            k: v
-            for k, v in remote_resp.headers.items()
-            if k.lower() not in excluded_headers
-        }
+            excluded_headers = {
+                "content-encoding",
+                "content-length",
+                "transfer-encoding",
+                "connection",
+            }
+            resp_headers = {
+                k: v
+                for k, v in remote_resp.headers.items()
+                if k.lower() not in excluded_headers
+            }
 
-        return Response(
-            content=remote_resp.content,
-            status_code=remote_resp.status_code,
-            headers=resp_headers,
-        )
+            return Response(
+                content=remote_resp.content,
+                status_code=remote_resp.status_code,
+                headers=resp_headers,
+            )
+        except Exception as exc:
+            import traceback
+            tb = traceback.format_exc()
+            return Response(
+                content=f"Remote lab sandbox unreachable at {remote}: {type(exc).__name__}: {exc}\n{tb}",
+                status_code=502,
+                media_type="text/plain",
+            )
 
     return await call_next(request)
 
