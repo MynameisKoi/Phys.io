@@ -10,17 +10,20 @@ Endpoints (all under /api/lab):
   GET  /runs/{id}/report        final_report.md, or the latest knowledge/cycle_<n>.md
   GET  /runs/{id}/download      the whole run folder as a zip
 
-Starting runs only works where Omnigent runs with your Claude credentials, i.e. your machine
-("local lab mode", LAB_ALLOW_START=1). With LAB_ACCESS_CODE set, starting and stopping need that
-code (header X-Lab-Code), and only one run may be active at a time: they spend Claude credits. The run is a normal interactive Omnigent session in a
-hidden tmux window: `omni run -p` is one-shot and would stop the departments after the
-Director's first turn. Elsewhere (Render) the same endpoints serve runs already on disk.
+Starting runs only works where Omnigent runs with your Claude credentials (LAB_ALLOW_START=1).
+/status lists anything missing (omni, tmux, the agent sandbox, the Omnigent server), and Start
+is refused until it is there: there is no scripted stand-in for the agents. With LAB_ACCESS_CODE
+set, starting and stopping need that code (header X-Lab-Code), and only one run may be active at
+a time: they spend Claude credits. The run is a normal interactive Omnigent session in a hidden
+tmux window: `omni run -p` is one-shot and would stop the departments after the Director's first
+turn. Without Omnigent the same endpoints still serve runs already on disk.
 The backend never makes a scientific decision: it starts the Director with the user's
 problem statement and reads files and Omnigent's session history. A watchdog tells the
 Director when a department logged a decision it was not notified about (see below).
 """
 from __future__ import annotations
 
+import functools
 import io
 import json
 import os
@@ -57,9 +60,6 @@ READY_TIMEOUT_S = 90
 TEXT_LIMIT = 600
 
 
-_ACTIVE_THREADS: dict[str, threading.Thread] = {}
-
-
 def _allow_start() -> bool:
     return os.getenv("LAB_ALLOW_START") == "1"
 
@@ -71,17 +71,10 @@ def _check_code(code: str | None) -> None:
         raise HTTPException(401, "Wrong or missing access code.")
 
 
-def _is_alive(run_id: str) -> bool:
-    if _tmux_alive(run_id):
-        return True
-    t = _ACTIVE_THREADS.get(run_id)
-    return bool(t and t.is_alive())
-
-
 def _active_runs() -> list[str]:
     if not RUNS.is_dir():
         return []
-    return [d.name for d in RUNS.iterdir() if d.is_dir() and RUN_ID_RE.match(d.name) and _is_alive(d.name)]
+    return [d.name for d in RUNS.iterdir() if d.is_dir() and RUN_ID_RE.match(d.name) and _tmux_alive(d.name)]
 
 
 def _run_dir(run_id: str, must_exist: bool = True) -> Path:
@@ -126,6 +119,17 @@ def _tmux_name(run_id: str) -> str:
     return f"physio-{run_id}"
 
 
+@functools.cache
+def _sandbox_works() -> bool:
+    """Agents with an os_env block run in bwrap on Linux; some containers forbid the namespaces it needs."""
+    if not sys.platform.startswith("linux"):
+        return True  # macOS uses Seatbelt, which is always available
+    if not shutil.which("bwrap"):
+        return False
+    probe = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-all", "true"]
+    return subprocess.run(probe, capture_output=True).returncode == 0
+
+
 def _tmux_alive(run_id: str) -> bool:
     if not shutil.which("tmux"):
         return False
@@ -142,6 +146,15 @@ def status() -> dict:
     reasons = []
     if not _allow_start():
         reasons.append("Starting runs is off on this server (set LAB_ALLOW_START=1 on the machine that runs Omnigent).")
+    else:
+        if not shutil.which("omni"):
+            reasons.append("The Omnigent CLI (omni) is not installed here.")
+        if not shutil.which("tmux"):
+            reasons.append("tmux is not installed here.")
+        if not _sandbox_works():
+            reasons.append("The agent sandbox (bwrap) cannot run on this machine, so the file-writing agents would fail.")
+        if _omnigent("/v1/sessions?limit=1", timeout=2) is None:
+            reasons.append(f"The Omnigent server at {OMNIGENT_URL} is not running (start it with `omni start`).")
     return {
         "can_start": not reasons,
         "reasons": reasons,
@@ -209,210 +222,25 @@ def start_run(req: StartRequest, x_lab_code: str | None = Header(default=None)) 
     }, indent=2), encoding="utf-8")
 
     name = _tmux_name(run_id)
-    if shutil.which("omni") and shutil.which("tmux"):
-        command = (
-            f"cd {shlex.quote(str(ROOT))} && env -u TMUX PYTHONPATH={shlex.quote(str(ROOT))} "
-            f"omni run {AGENT_BUNDLE}"
-        )
-        subprocess.run(["tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50", command], check=True)
-        deadline = time.time() + READY_TIMEOUT_S
-        while time.time() < deadline:
-            pane = subprocess.run(["tmux", "capture-pane", "-p", "-t", name], capture_output=True, text=True).stdout
-            if "· ready" in pane:
-                break
-            if not _tmux_alive(run_id):
-                raise HTTPException(500, "Omnigent exited before it was ready; see ~/.omnigent/logs/cli/.")
-            time.sleep(1)
-        else:
-            subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
-            raise HTTPException(504, f"Omnigent was not ready after {READY_TIMEOUT_S} s.")
-        subprocess.run(["tmux", "send-keys", "-t", name, "-l", task], check=True)
-        subprocess.run(["tmux", "send-keys", "-t", name, "Enter"], check=True)
+    command = (
+        f"cd {shlex.quote(str(ROOT))} && env -u TMUX PYTHONPATH={shlex.quote(str(ROOT))} "
+        f"omni run {AGENT_BUNDLE}"
+    )
+    subprocess.run(["tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50", command], check=True)
+    deadline = time.time() + READY_TIMEOUT_S
+    while time.time() < deadline:
+        pane = subprocess.run(["tmux", "capture-pane", "-p", "-t", name], capture_output=True, text=True).stdout
+        if "· ready" in pane:
+            break
+        if not _tmux_alive(run_id):
+            raise HTTPException(500, "Omnigent exited before it was ready; see ~/.omnigent/logs/cli/.")
+        time.sleep(1)
     else:
-        _spawn_cloud_discovery_worker(run_id, req.problem, req.cycles, run_dir)
+        subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
+        raise HTTPException(504, f"Omnigent was not ready after {READY_TIMEOUT_S} s.")
+    subprocess.run(["tmux", "send-keys", "-t", name, "-l", task], check=True)
+    subprocess.run(["tmux", "send-keys", "-t", name, "Enter"], check=True)
     return {"run_id": run_id, "task": task}
-
-
-def _spawn_cloud_discovery_worker(run_id: str, problem: str, cycles: int, run_dir: Path) -> None:
-    """Run an autonomous agent discovery cycle in a background thread when omni/tmux is not available."""
-    def _worker():
-        try:
-            import numpy as np
-            from lab import physics as P
-
-            # 1. Literature Department
-            lit_dir = run_dir / "logs" / "literature"
-            lit_dir.mkdir(parents=True, exist_ok=True)
-            now = time.time()
-            with open(run_dir / "record.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "id": "L-1", "kind": "literature", "agent": "literature_specialist", "t": now,
-                    "epistemic_status": "established_fact",
-                    "content": {
-                        "citation": "Raman et al., Nature 515, 540-544 (2014)",
-                        "doi": "10.1038/nature13883",
-                        "claim": "7-layer HfO2/SiO2 on Ag achieves 97% solar reflectance and 40.1 W/m2 cooling power.",
-                    }
-                }) + "\n")
-            with open(lit_dir / "department.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "id": "DL-1", "department": "literature", "level": "department", "t": now + 0.1,
-                    "payload": {"status": "accepted", "citations_count": 1}
-                }) + "\n")
-            time.sleep(1.0)
-
-            # 2. Hypothesis Department
-            hypo_dir = run_dir / "logs" / "hypothesis"
-            hypo_dir.mkdir(parents=True, exist_ok=True)
-            now = time.time()
-            with open(run_dir / "record.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "id": "H-1", "kind": "hypothesis", "agent": "hypothesis_specialist", "t": now,
-                    "epistemic_status": "ai_hypothesis",
-                    "based_on": ["L-1"],
-                    "content": {
-                        "materials": ["Si3N4", "SiO2", "Si3N4", "SiO2"],
-                        "rationale": "High refractive index contrast (Si3N4 n~2.0, SiO2 n~1.45) maximizes solar reflectance; SiO2 reststrahlen band enhances 8-13 um emissivity.",
-                        "status": "proposed"
-                    }
-                }) + "\n")
-            with open(hypo_dir / "department.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "id": "DH-1", "department": "hypothesis", "level": "department", "t": now + 0.1,
-                    "payload": {"materials": ["Si3N4", "SiO2", "Si3N4", "SiO2"], "decision": "Proceed to planning"}
-                }) + "\n")
-            time.sleep(1.0)
-
-            # 3. Planning Department
-            plan_dir = run_dir / "logs" / "planning"
-            plan_dir.mkdir(parents=True, exist_ok=True)
-            now = time.time()
-            with open(run_dir / "record.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "id": "P-1", "kind": "plan", "agent": "planning_specialist", "t": now,
-                    "epistemic_status": "decision",
-                    "based_on": ["H-1"],
-                    "content": {
-                        "test_design": ["Si3N4", "SiO2", "Si3N4", "SiO2"],
-                        "substrate": "Ag",
-                        "budget": 20,
-                        "algorithm": "coordinate_descent"
-                    }
-                }) + "\n")
-            time.sleep(1.0)
-
-            # 4. Experiment Runner Department
-            exp_dir = run_dir / "experiments" / "exp_01"
-            exp_dir.mkdir(parents=True, exist_ok=True)
-            evals_file = exp_dir / "evaluations.jsonl"
-            materials = ["Si3N4", "SiO2", "Si3N4", "SiO2"]
-            base_t = [70.0, 280.0, 15.0, 65.0]
-            rng = np.random.RandomState(42)
-            results_rows = []
-            best_p = -999.0
-
-            for i in range(20):
-                if i == 0:
-                    cand_t = list(base_t)
-                else:
-                    cand_t = [float(np.clip(t + rng.choice([-30, -15, 15, 30]), 10.0, 1000.0)) for t in base_t]
-
-                try:
-                    res = P._evaluate(materials, cand_t, "Ag")
-                    p_net = float(res.get("p_net_w_m2", 0))
-                    r_sol = float(res.get("solar_reflectance", 0))
-                    e_win = float(res.get("window_emissivity", 0))
-                except Exception:
-                    p_net, r_sol, e_win = 45.0, 0.95, 0.75
-
-                if p_net > best_p:
-                    best_p = p_net
-                    base_t = cand_t
-
-                record_line = {
-                    "evaluation": i + 1,
-                    "t": time.time(),
-                    "materials": materials,
-                    "thicknesses_nm": [round(t, 1) for t in cand_t],
-                    "substrate": "Ag",
-                    "valid": True,
-                    "p_net_w_m2": round(p_net, 2),
-                    "solar_reflectance": round(r_sol, 4),
-                    "window_emissivity": round(e_win, 4)
-                }
-                with open(evals_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(record_line) + "\n")
-                results_rows.append(record_line)
-                time.sleep(0.3)
-
-            import csv
-            with open(exp_dir / "results.csv", "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(results_rows[0].keys()))
-                writer.writeheader()
-                writer.writerows(results_rows)
-
-            now = time.time()
-            with open(run_dir / "record.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "id": "R-1", "kind": "result", "agent": "experiment_runner_specialist", "t": now,
-                    "epistemic_status": "simulation_result",
-                    "based_on": ["P-1"],
-                    "content": {
-                        "evaluations": len(results_rows),
-                        "best_p_net_w_m2": round(best_p, 2),
-                        "best_thicknesses_nm": [round(t, 1) for t in base_t]
-                    }
-                }) + "\n")
-            time.sleep(1.0)
-
-            # 5. Analysis Department
-            now = time.time()
-            with open(run_dir / "record.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps({
-                    "id": "V-1", "kind": "verdict", "agent": "analysis_specialist", "t": now,
-                    "epistemic_status": "analysis",
-                    "based_on": ["R-1", "H-1"],
-                    "content": {
-                        "hypothesis_id": "H-1",
-                        "status": "supported",
-                        "p_net_achieved": round(best_p, 2),
-                        "target_w_m2": 50.0,
-                        "verdict": f"Exceeded benchmark target by +{round(best_p - 50.0, 2)} W/m2 with 4-layer Si3N4/SiO2 stack."
-                    }
-                }) + "\n")
-            time.sleep(1.0)
-
-            # 6. Final Report
-            report_text = f"""# Scientific Discovery Report: {run_id}
-
-## Problem Statement
-{problem}
-
-## Executive Summary
-The Omnigent Autonomous AI Lab conducted a multi-department scientific exploration for passive daytime radiative cooling coatings.
-
-### Breakthrough Result
-- **Architecture:** 4 layers on Silver (Ag) substrate
-- **Materials:** Si3N4 / SiO2 / Si3N4 / SiO2
-- **Thicknesses:** {', '.join(f'{t:.1f} nm' for t in base_t)}
-- **Net Cooling Power (P_net):** **{best_p:.2f} W/m²** (exceeds 50 W/m² target and beats 7-layer Stanford baseline)
-- **Solar Reflectance:** 97.4%
-- **Atmospheric Window Emissivity (8–13 µm):** 81.2%
-
-## Epistemic Chain of Custody
-1. **[L-1] Literature:** Validated benchmark from Raman et al. Nature 2014.
-2. **[H-1] Hypothesis:** Formulated 4-layer Si3N4/SiO2 dielectric stack for optimal spectral selectivity.
-3. **[P-1] Plan:** Coordinated optimization budget over {len(results_rows)} simulations.
-4. **[R-1] Experiment:** Simulated physical stack using Transfer-Matrix Method (TMM).
-5. **[V-1] Verdict:** Confirmed hypothesis `supported` (P_net > 50.0 W/m²).
-"""
-            (run_dir / "final_report.md").write_text(report_text, encoding="utf-8")
-        finally:
-            _ACTIVE_THREADS.pop(run_id, None)
-
-    thread = threading.Thread(target=_worker, name=f"discovery-{run_id}", daemon=True)
-    _ACTIVE_THREADS[run_id] = thread
-    thread.start()
 
 
 @router.post("/runs/{run_id}/stop")
@@ -422,10 +250,9 @@ def stop_run(run_id: str, x_lab_code: str | None = Header(default=None)) -> dict
         raise HTTPException(403, "Stopping runs is off on this server.")
     _check_code(x_lab_code)
     _run_dir(run_id)
-    was_running = _is_alive(run_id)
-    if _tmux_alive(run_id):
+    was_running = _tmux_alive(run_id)
+    if was_running:
         subprocess.run(["tmux", "kill-session", "-t", _tmux_name(run_id)], capture_output=True)
-    _ACTIVE_THREADS.pop(run_id, None)
     return {"run_id": run_id, "stopped": was_running}
 
 
@@ -596,11 +423,11 @@ def activity(run_id: str, limit: int = 300) -> dict:
     if not agents:
         depts = ["lab_director", "literature", "hypothesis", "planning", "experiment_runner", "analysis", "review_safety", "knowledge_memory"]
         for d in depts:
-            agents.append({"agent": d, "status": "working" if _is_alive(run_id) else "idle"})
+            agents.append({"agent": d, "status": "working" if _tmux_alive(run_id) else "idle"})
     return {
         "run_id": run_id,
         "problem": problem.get("problem"),
-        "running": _is_alive(run_id),
+        "running": _tmux_alive(run_id),
         "omnigent_connected": root is not None,
         "agents": agents,
         "events": events[-limit:],
