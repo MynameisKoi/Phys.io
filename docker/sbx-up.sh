@@ -44,14 +44,19 @@ else
         --allow-network "files.pythonhosted.org" \
         --allow-network "github.com" \
         --allow-network "registry-1.docker.io" \
-        --allow-network "production.cloudflare.docker.com" \
         --allow-network "auth.docker.io" \
-        --allow-network "deb.debian.org"
+        --allow-network "deb.debian.org" \
+        --allow-network "**.docker.com" \
+        --allow-network "**.docker.io"
 fi
 
 # 3. Copy repository into sandbox
-echo "[sbx-up] Copying repository to sandbox /workspace..."
-sbx --cloud cp "${REPO_DIR}" "${SANDBOX_NAME}:/workspace"
+echo "[sbx-up] Packaging and copying repository to sandbox /workspace..."
+TARBALL=$(mktemp /tmp/physio_repo_XXXXXX.tar.gz)
+tar --exclude='.git' --exclude='.venv' --exclude='**/node_modules' -czf "${TARBALL}" -C "${REPO_DIR}" .
+sbx --cloud cp "${TARBALL}" "${SANDBOX_NAME}:/tmp/physio_repo.tar.gz"
+sbx --cloud exec "${SANDBOX_NAME}" -- tar -xzf /tmp/physio_repo.tar.gz -C /workspace
+rm -f "${TARBALL}"
 
 # 4. Build image inside microVM
 echo "[sbx-up] Building physio-live image inside microVM..."
