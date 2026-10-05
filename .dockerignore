@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+**/node_modules
+technology
+Other LLMs Work
+.env
+runs/*
+!runs/example
+!runs/example/**
