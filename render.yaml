@@ -22,3 +22,6 @@ services:
         sync: false
       - key: BRIGHTDATA_API_TOKEN
         sync: false
+      - key: LAB_REMOTE_URL
+        sync: false
+

@@ -157,3 +157,55 @@ def test_watchdog_tells_the_director_about_a_missed_decision_once(client, fake_t
     director_t["value"] = 1500.0                       # Director already acted after the entry
     (run / "live.json").write_text("{}")
     assert live._watchdog_check("w1") is None
+
+
+def test_forwarding_to_remote_sandbox(client, monkeypatch):
+    import httpx
+    import app.main as main_module
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["headers"] = dict(request.headers)
+        captured["content"] = request.content
+        if request.url.path == "/api/lab/runs/r1/download":
+            return httpx.Response(200, content=b"PK-fake-zip", headers={"content-type": "application/zip"})
+        return httpx.Response(200, json={"can_start": True, "source": "remote_sandbox"})
+
+    class MockAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setenv("LAB_REMOTE_URL", "https://sandbox.example.com")
+    monkeypatch.setattr(main_module.httpx, "AsyncClient", MockAsyncClient)
+
+    # 1. GET status forwarded
+    res = client.get("/api/lab/status")
+    assert res.status_code == 200
+    assert res.json() == {"can_start": True, "source": "remote_sandbox"}
+    assert captured["url"] == "https://sandbox.example.com/api/lab/status"
+
+    # 2. POST with headers and body forwarded
+    res = client.post("/api/lab/runs", json={"problem": "test problem"}, headers={"X-Lab-Code": "mycode"})
+    assert res.status_code == 200
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://sandbox.example.com/api/lab/runs"
+    assert captured["headers"].get("x-lab-code") == "mycode"
+    assert b"test problem" in captured["content"]
+
+    # 3. Zip download passed back unchanged
+    res = client.get("/api/lab/runs/r1/download")
+    assert res.status_code == 200
+    assert res.content == b"PK-fake-zip"
+    assert res.headers["content-type"] == "application/zip"
+
+
+def test_forwarding_unreachable_returns_502(client, monkeypatch):
+    monkeypatch.setenv("LAB_REMOTE_URL", "http://127.0.0.1:59999")
+    res = client.get("/api/lab/status")
+    assert res.status_code == 502
+    assert "Remote lab sandbox unreachable at http://127.0.0.1:59999" in res.text
+
