@@ -41,6 +41,7 @@ def fake_tmux(monkeypatch):
 
     monkeypatch.setattr(live.subprocess, "run", run)
     monkeypatch.setattr(live.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(live, "_sandbox_works", lambda: True)
     monkeypatch.setenv("LAB_ALLOW_START", "1")
     return calls
 
@@ -53,6 +54,17 @@ def test_starting_is_off_by_default(client, monkeypatch):
     status = client.get("/api/lab/status").json()
     assert status["can_start"] is False and "LAB_ALLOW_START" in status["reasons"][0]
     assert client.post("/api/lab/runs", json={"problem": PROBLEM}).status_code == 403
+
+
+def test_a_server_without_omnigent_refuses_to_start_instead_of_faking_a_run(client, monkeypatch):
+    monkeypatch.setenv("LAB_ALLOW_START", "1")
+    monkeypatch.setattr(live.shutil, "which", lambda name: None)
+    monkeypatch.setattr(live, "_sandbox_works", lambda: True)
+    status = client.get("/api/lab/status").json()
+    assert status["can_start"] is False
+    assert any("omni" in r for r in status["reasons"]) and any("tmux" in r for r in status["reasons"])
+    res = client.post("/api/lab/runs", json={"problem": PROBLEM, "run_id": "nope"})
+    assert res.status_code == 403 and not (live.RUNS / "nope").exists()
 
 
 def test_start_sends_the_problem_to_a_new_session(client, fake_tmux, monkeypatch):
