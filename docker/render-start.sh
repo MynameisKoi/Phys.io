@@ -45,15 +45,19 @@ mkdir -p "$HOME/.omnigent"
 cat << 'EOF' > "$HOME/.omnigent/config.yaml"
 auto_open_conversation: true
 default_agent: backend/app/agents
+tui:
+  theme: dark
 providers:
   anthropic:
     anthropic:
       api_key_ref: env:ANTHROPIC_API_KEY
       base_url: https://api.anthropic.com
+      models:
+        default: claude-sonnet-5-5
     kind: key
 EOF
 
-# 3. Writes BRIGHTDATA_API_TOKEN to .env
+# 3. Writes BRIGHTDATA_API_TOKEN and ANTHROPIC_API_KEY to .env
 touch /app/.env
 if [ -n "${BRIGHTDATA_API_TOKEN:-}" ]; then
     sed -i '/^BRIGHTDATA_API_TOKEN=/d' /app/.env 2>/dev/null || true
@@ -63,6 +67,14 @@ fi
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     sed -i '/^ANTHROPIC_API_KEY=/d' /app/.env 2>/dev/null || true
     echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" >> /app/.env
+fi
+
+# Source .env into environment so all child processes (omni, tmux, uvicorn) inherit
+if [ -f "/app/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source /app/.env
+    set +a
 fi
 
 # 4. Runs omni start, then uvicorn

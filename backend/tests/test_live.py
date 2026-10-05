@@ -232,3 +232,15 @@ def test_forwarding_sanitizes_quoted_or_padded_url(client, monkeypatch):
     assert captured["url"] == "https://sandbox.example.com/api/lab/status"
 
 
+def test_run_pane_and_logs_endpoints(client, fake_tmux):
+    res = client.get("/api/lab/runs/demo1/pane")
+    assert res.status_code == 200
+    assert "pane" in res.json()
+    assert "running" in res.json()
+
+    res = client.get("/api/lab/runs/demo1/logs")
+    assert res.status_code == 200
+    assert "logs" in res.json()
+
+
+

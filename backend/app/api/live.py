@@ -201,6 +201,19 @@ def _task_text(run_id: str, problem: str, cycles: int) -> str:
     )
 
 
+def _send_task_when_ready(run_id: str, name: str, task: str, timeout_s: float = 60.0) -> None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not _tmux_alive(run_id):
+            return
+        pane = subprocess.run(["tmux", "capture-pane", "-p", "-t", name], capture_output=True, text=True).stdout
+        if "· ready" in pane:
+            subprocess.run(["tmux", "send-keys", "-t", name, "-l", task], check=False)
+            subprocess.run(["tmux", "send-keys", "-t", name, "Enter"], check=False)
+            return
+        time.sleep(1)
+
+
 @router.post("/runs")
 def start_run(req: StartRequest, x_lab_code: str | None = Header(default=None)) -> dict:
     """Start the Lab Director on a problem statement, in a new interactive Omnigent session."""
@@ -222,25 +235,68 @@ def start_run(req: StartRequest, x_lab_code: str | None = Header(default=None)) 
     }, indent=2), encoding="utf-8")
 
     name = _tmux_name(run_id)
+    env_exports = ""
+    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "BRIGHTDATA_API_TOKEN", "ANTHROPIC_BASE_URL"):
+        val = os.getenv(var)
+        if val:
+            env_exports += f"export {var}={shlex.quote(val)} && "
+
     command = (
-        f"cd {shlex.quote(str(ROOT))} && env -u TMUX PYTHONPATH={shlex.quote(str(ROOT))} "
+        f"cd {shlex.quote(str(ROOT))} && {env_exports}env -u TMUX PYTHONPATH={shlex.quote(str(ROOT))} "
         f"omni run {AGENT_BUNDLE}"
     )
     subprocess.run(["tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50", command], check=True)
-    deadline = time.time() + READY_TIMEOUT_S
-    while time.time() < deadline:
+
+    # Check for immediate ready signal (e.g. In tests or fast local runs)
+    initial_deadline = time.time() + 5.0
+    sent = False
+    while time.time() < initial_deadline:
         pane = subprocess.run(["tmux", "capture-pane", "-p", "-t", name], capture_output=True, text=True).stdout
         if "· ready" in pane:
+            subprocess.run(["tmux", "send-keys", "-t", name, "-l", task], check=True)
+            subprocess.run(["tmux", "send-keys", "-t", name, "Enter"], check=True)
+            sent = True
             break
         if not _tmux_alive(run_id):
             raise HTTPException(500, "Omnigent exited before it was ready; see ~/.omnigent/logs/cli/.")
-        time.sleep(1)
-    else:
-        subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
-        raise HTTPException(504, f"Omnigent was not ready after {READY_TIMEOUT_S} s.")
-    subprocess.run(["tmux", "send-keys", "-t", name, "-l", task], check=True)
-    subprocess.run(["tmux", "send-keys", "-t", name, "Enter"], check=True)
+        time.sleep(0.5)
+
+    if not sent:
+        # Continue waiting asynchronously to avoid HTTP 30s gateway timeout
+        threading.Thread(
+            target=_send_task_when_ready,
+            args=(run_id, name, task, READY_TIMEOUT_S),
+            daemon=True,
+            name=f"starter-{run_id}",
+        ).start()
+
     return {"run_id": run_id, "task": task}
+
+
+@router.get("/runs/{run_id}/pane")
+def run_pane(run_id: str) -> dict:
+    """Live terminal pane text from the tmux session running Omnigent."""
+    name = _tmux_name(run_id)
+    res = subprocess.run(["tmux", "capture-pane", "-p", "-t", name], capture_output=True, text=True)
+    return {
+        "run_id": run_id,
+        "running": _tmux_alive(run_id),
+        "pane": res.stdout if res.returncode == 0 else f"No active tmux session for {run_id}",
+    }
+
+
+@router.get("/runs/{run_id}/logs")
+def run_logs(run_id: str) -> dict:
+    """Recent Omnigent logs from ~/.omnigent/logs/."""
+    log_dir = Path.home() / ".omnigent" / "logs"
+    logs = {}
+    for sub in ("cli", "runner", "host"):
+        p = log_dir / sub
+        if p.is_dir():
+            files = sorted(p.glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if files:
+                logs[sub] = files[0].read_text(encoding="utf-8", errors="ignore")[-4000:]
+    return {"run_id": run_id, "logs": logs}
 
 
 @router.post("/runs/{run_id}/stop")
@@ -418,6 +474,17 @@ def activity(run_id: str, limit: int = 300) -> dict:
                            "text": f"{entry.get('id')} · {json.dumps(entry.get('payload'), ensure_ascii=False)[:TEXT_LIMIT]}"})
     for entry in _read_jsonl(run_dir / "runtime.jsonl"):
         events.append({"t": entry.get("t", 0), "agent": "lab_runtime", "kind": "runtime", "text": entry.get("text", "")})
+    if not events and _tmux_alive(run_id):
+        name = _tmux_name(run_id)
+        pane = subprocess.run(["tmux", "capture-pane", "-p", "-t", name], capture_output=True, text=True).stdout
+        non_empty = [line.strip() for line in pane.splitlines() if line.strip()]
+        last_line = non_empty[-1] if non_empty else "Session initializing..."
+        events.append({
+            "t": time.time(),
+            "agent": "lab_director",
+            "kind": "runtime:session",
+            "text": f"Agent terminal: {last_line[:140]}",
+        })
     events.sort(key=lambda e: e["t"])
     problem = _read_json(run_dir / "problem.json")
     if not agents:

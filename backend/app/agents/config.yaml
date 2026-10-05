@@ -7,6 +7,7 @@ executor:
   type: omnigent
   config:
     harness: claude-sdk
+    model: claude-sonnet-5-5
 
 instructions: prompt.md
 
