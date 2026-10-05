@@ -1,7 +1,12 @@
 import os
+from pathlib import Path
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from starlette.requests import Request
+from starlette.responses import Response
 
 app = FastAPI(title="Physics Study API")
 
@@ -20,6 +25,57 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def lab_remote_proxy_middleware(request: Request, call_next):
+    """Forward /api/lab/* requests to a remote sandbox (e.g. Docker Sandboxes cloud) when LAB_REMOTE_URL is set."""
+    remote = os.getenv("LAB_REMOTE_URL", "").rstrip("/")
+    if remote and request.url.path.startswith("/api/lab"):
+        target_url = f"{remote}{request.url.path}"
+        if request.url.query:
+            target_url = f"{target_url}?{request.url.query}"
+
+        headers = {}
+        for k, v in request.headers.items():
+            if k.lower() not in ("host", "content-length"):
+                headers[k] = v
+
+        body = await request.body()
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                remote_resp = await client.request(
+                    method=request.method,
+                    url=target_url,
+                    headers=headers,
+                    content=body,
+                )
+            except (httpx.RequestError, OSError) as exc:
+                return Response(
+                    content=f"Remote lab sandbox unreachable at {remote}: {exc}",
+                    status_code=502,
+                    media_type="text/plain",
+                )
+
+        excluded_headers = {
+            "content-encoding",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+        }
+        resp_headers = {
+            k: v
+            for k, v in remote_resp.headers.items()
+            if k.lower() not in excluded_headers
+        }
+
+        return Response(
+            content=remote_resp.content,
+            status_code=remote_resp.status_code,
+            headers=resp_headers,
+        )
+
+    return await call_next(request)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Used by Render health checks and the CD smoke test."""
@@ -27,10 +83,6 @@ def health() -> dict[str, str]:
 
 
 # Routers from app/api/ get registered here.
-from pathlib import Path  # noqa: E402
-
-from fastapi.staticfiles import StaticFiles  # noqa: E402
-
 from app.api.lab import router as lab_router  # noqa: E402
 from app.api.live import router as live_router  # noqa: E402
 
