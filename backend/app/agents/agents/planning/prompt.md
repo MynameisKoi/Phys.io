@@ -34,6 +34,14 @@ send the task again while you wait. Pass the run ID as `run_id` in every tool ca
 6. Decide whether the agents can create the script and run it themselves. They can only if every
    step uses the lab's own tools (e.g. `simulate_stack`, `optimize_thicknesses`), fits the
    remaining budget, and needs no physical lab work, fabrication or data the lab cannot access.
+   - **Tool capabilities & constraints:**
+     - `simulate_stack`: Strictly accepts 1 to 5 layers of allowed materials (`SiO2`, `Al2O3`, `Si3N4`,
+       `TiO2`, `MgF2`) on `Ag` or `Al`, with thicknesses between 10 and 1000 nm.
+     - Stanford control: Must be evaluated using `lab.physics.stanford_control()` (which computes the
+       11.8278 W/m² baseline directly). Do NOT specify `simulate_stack` for the control (it has 7 layers
+       and uses HfO2, which are outside `simulate_stack` limits).
+     - `optimize_thicknesses`: Optimizes thicknesses within the 10-1000 nm box. Thicknesses cannot
+       exceed 1000 nm.
    - **Yes:** mark the plan `runnable_by: agents`, ready for the Experiment Runner department.
    - **No:** mark the plan `runnable_by: human`, and write a message for the user: what to do, why
      the agents cannot do it, and what result to send back.

@@ -4,8 +4,9 @@ An autonomous scientific discovery lab orchestrated with **Omnigent** that disco
 
 Built for the **7th Global AI Hackathon (Databricks × Hack-Nation): Challenge 03 — Agentic Scientific Discovery**.
 
-[![Backend Health](https://img.shields.io/badge/Render-Healthy-2ea44f?logo=render)](https://physics-study-api-7twp.onrender.com/health)
-[![Mission Site](https://img.shields.io/badge/Site-Live-black?logo=render)](https://physics-study-api-7twp.onrender.com/)
+[![Backend Health](https://img.shields.io/badge/Render-Healthy-2ea44f?logo=render)](https://physics-study-api-fmq1.onrender.com/health)
+[![Mission Site](https://img.shields.io/badge/Site-Live-black?logo=render)](https://physics-study-api-fmq1.onrender.com/)
+[![Custom Domain](https://img.shields.io/badge/Domain-physiolearning.courses-blue)](https://www.physiolearning.courses/)
 [![Tests Passing](https://img.shields.io/badge/Tests-128%20pytest%20%7C%206%20vitest%20passed-brightgreen)](https://github.com/DuongAnh1201/Phys.io)
 
 ---
@@ -14,9 +15,10 @@ Built for the **7th Global AI Hackathon (Databricks × Hack-Nation): Challenge 0
 
 | Surface | URL | Description |
 |---|---|---|
-| **Mission Landing Site** | [https://physics-study-api-7twp.onrender.com](https://physics-study-api-7twp.onrender.com/) | 3D interactive story landing, spectral physics explorer, real-time lab dashboard (served by the backend, so site and API share one address) |
-| **Backend API** (Render) | [https://physics-study-api-7twp.onrender.com/docs](https://physics-study-api-7twp.onrender.com/docs) | FastAPI physical simulator, optical constants (n, k), research records, control baseline |
-| **API Health Check** | [https://physics-study-api-7twp.onrender.com/health](https://physics-study-api-7twp.onrender.com/health) | Live production service health check (`{"status": "ok"}`) |
+| **Custom Production Domain** | [https://www.physiolearning.courses](https://www.physiolearning.courses/) | Live production web portal on Vercel |
+| **Mission Landing Site** | [https://physics-study-api-fmq1.onrender.com](https://physics-study-api-fmq1.onrender.com/) | 3D interactive story landing, spectral physics explorer, real-time lab dashboard (served by the backend, so site and API share one address) |
+| **Backend API** (Render) | [https://physics-study-api-fmq1.onrender.com/docs](https://physics-study-api-fmq1.onrender.com/docs) | FastAPI physical simulator, optical constants (n, k), research records, control baseline |
+| **API Health Check** | [https://physics-study-api-fmq1.onrender.com/health](https://physics-study-api-fmq1.onrender.com/health) | Live production service health check (`{"status": "ok"}`) |
 | **Technology Workbench** | `technology/` (Vite + React) | Interactive replay UI for `record.jsonl`, candidate design stack builder, and spectra visualizer |
 
 ---

@@ -33,7 +33,11 @@ send the task again while you wait. Pass the run ID as `run_id` in every tool ca
    - It finished without errors (see `output.log`).
    - `results.csv` has the expected columns, units and number of rows.
    If not, send it back with what to fix; the fixed code goes in a new experiment folder. If the
-   plan cannot be run as written, report that to the Lab Director.
+   plan has minor parameter mismatches with tool signatures (such as the control requiring
+   stanford_control() or thicknesses needing clamping to 1000 nm), have the specialist adapt the code
+   within legal simulator limits, record the adaptation in the notes, and execute the experiment.
+   Only report a blocker to the Lab Director if the experiment fundamentally cannot be simulated
+   (e.g. requires physical fabrication or unavailable hardware).
 5. Write the run to the record.
 6. Send your decision to `experiment_runner_secretary` for the department log, including the
    experiment folder. It logs it and returns the briefing for the Lab Director.

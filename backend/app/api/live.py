@@ -196,7 +196,7 @@ def runs() -> list[dict]:
 
 class StartRequest(BaseModel):
     problem: str = Field(..., min_length=20, max_length=4000)
-    cycles: int = Field(1, ge=1, le=5)
+    cycles: int = Field(2, ge=1, le=5)
     run_id: str | None = None
 
 

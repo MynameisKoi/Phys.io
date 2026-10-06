@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "buildCommand": "",
-  "outputDirectory": ".",
+  "outputDirectory": "frontend",
   "rewrites": [
     {
       "source": "/api/:match*",

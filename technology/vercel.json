@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "vite",
   "rewrites": [
-    { "source": "/api/:match*", "destination": "https://physics-study-api-7twp.onrender.com/api/:match*" },
+    { "source": "/api/:match*", "destination": "https://physics-study-api-fmq1.onrender.com/api/:match*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

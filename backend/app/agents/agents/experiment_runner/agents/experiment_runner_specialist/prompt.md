@@ -27,6 +27,15 @@ runs/<run_id>/experiments/<experiment_id>/
    evaluation is counted. Write `results.csv` into the script's own folder with
    `lab.csv_helper.write_results_csv`. Follow the pattern in
    `runs/example/experiments/E0/run.py`.
+   - **Control Baseline:** If the plan asks to evaluate the 7-layer Stanford control, evaluate it with
+     `lab.physics.stanford_control()` (which computes the simulator's control baseline at 11.8278 W/m²),
+     since `simulate_stack` only accepts 1-5 layers of the allowed materials.
+   - **Thickness Limits:** If the plan specifies search bounds outside the simulator's 10-1000 nm limits
+     (e.g. >1000 nm or <10 nm), clamp them to valid simulator limits (10 to 1000 nm), note the clamp in
+     the script comments and output log, and execute the simulations rather than aborting.
+   - **Optimizer Ranges:** If `optimize_thicknesses` does not accept custom per-layer bounds, run it over its standard
+     box or run a bounded grid/sweep via `simulate_stack` to produce per-trial rows. Never abort with
+     0 evaluations if the plan can be executed within valid physical bounds.
 2. **Run.** Call the `run_experiment` tool with the experiment ID. It runs `python run.py` in the
    experiment folder, saves everything it prints to `output.log`, and returns the exit code and
    the number of rows in `results.csv`.
