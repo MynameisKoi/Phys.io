@@ -320,8 +320,8 @@ def stop_run(run_id: str, x_lab_code: str | None = Header(default=None)) -> dict
 # goes idle and the run stalls. The watchdog notices a department decision logged after the
 # Director's last action and tells the Director, once per log entry. It makes no scientific
 # decision: it only reports a fact the Director can verify in the department logs.
-WATCHDOG_INTERVAL_S = 20
-WATCHDOG_SETTLE_S = 45
+WATCHDOG_INTERVAL_S = 10
+WATCHDOG_SETTLE_S = 15
 _watchdog_started = False
 _watchdog_lock = threading.Lock()
 
@@ -336,38 +336,66 @@ def _latest_department_entry(run_dir: Path) -> dict | None:
 
 
 def _watchdog_check(run_id: str) -> str | None:
-    """Nudge the Director of one run if it missed a department decision. Returns the nudge text."""
+    """Nudge the Director of one run if it missed a department decision or if a department stalled."""
     run_dir = RUNS / run_id
     root = _root_session(run_id, run_dir)
     if not root:
         return None
-    tree = _session_tree(root, "lab_director")
-    infos = [_omnigent(f"/v1/sessions/{sid}") or {} for sid, _ in tree]
-    if any((i.get("status") or "idle") != "idle" for i in infos):
-        return None
-    entry = _latest_department_entry(run_dir)
-    if not entry or time.time() - entry.get("t", 0) < WATCHDOG_SETTLE_S:
-        return None
-    last = _omnigent(f"/v1/sessions/{root}/items?limit=1&order=desc") or []
-    director_t = float(last[0].get("created_at") or 0) if isinstance(last, list) and last else 0.0
-    if entry.get("t", 0) <= director_t:
+    dir_info = _omnigent(f"/v1/sessions/{root}") or {}
+    if (dir_info.get("status") or "idle") != "idle":
         return None
     live = _read_json(run_dir / "live.json")
-    if entry.get("id") in live.get("nudged", []):
-        return None
-    department = entry.get("department", "A department")
-    text = (
-        f"[Lab runtime] The {department} department logged its decision ({entry.get('id')}) after its "
-        f"earlier reply to you, so you were not notified. Read the department logs "
-        f"(read_all_department_logs, run_id {run_id}) and the record, then continue the run."
-    )
-    subprocess.run(["tmux", "send-keys", "-t", _tmux_name(run_id), "-l", text], check=False)
-    subprocess.run(["tmux", "send-keys", "-t", _tmux_name(run_id), "Enter"], check=False)
-    live["nudged"] = live.get("nudged", []) + [entry.get("id")]
-    (run_dir / "live.json").write_text(json.dumps(live), encoding="utf-8")
-    with open(run_dir / "runtime.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps({"t": time.time(), "kind": "nudge", "entry": entry.get("id"), "text": text}, ensure_ascii=False) + "\n")
-    return text
+    last = _omnigent(f"/v1/sessions/{root}/items?limit=1&order=desc") or []
+    director_t = float(last[0].get("created_at") or 0) if isinstance(last, list) and last else 0.0
+
+    entry = _latest_department_entry(run_dir)
+    if entry and (time.time() - entry.get("t", 0) >= WATCHDOG_SETTLE_S) and (entry.get("t", 0) > director_t):
+        if entry.get("id") not in live.get("nudged", []):
+            department = entry.get("department", "A department")
+            text = (
+                f"[Lab runtime] The {department} department logged its decision ({entry.get('id')}) after its "
+                f"earlier reply to you, so you were not notified. Read the department logs "
+                f"(read_all_department_logs, run_id {run_id}) and the record, then continue the run."
+            )
+            subprocess.run(["tmux", "send-keys", "-t", _tmux_name(run_id), "-l", text], check=False)
+            subprocess.run(["tmux", "send-keys", "-t", _tmux_name(run_id), "Enter"], check=False)
+            live["nudged"] = live.get("nudged", []) + [entry.get("id")]
+            (run_dir / "live.json").write_text(json.dumps(live), encoding="utf-8")
+            with open(run_dir / "runtime.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"t": time.time(), "kind": "nudge", "entry": entry.get("id"), "text": text}, ensure_ascii=False) + "\n")
+            return text
+
+    # Stall recovery: Director has been waiting for > 90s after sending to a department without a department log
+    if director_t and (time.time() - director_t > 90):
+        # Find which department was targeted in the last interaction
+        target_dept = None
+        for item in (last if isinstance(last, list) else []):
+            for block in item.get("content", []):
+                if isinstance(block, dict) and block.get("name") == "sys_session_send":
+                    args_raw = block.get("arguments") or "{}"
+                    try:
+                        args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                        target_dept = args.get("agent")
+                    except Exception:
+                        pass
+        if target_dept and target_dept != "lab_director":
+            dept_log = run_dir / "logs" / target_dept / "department.jsonl"
+            stall_key = f"stall_{target_dept}_{int(director_t)}"
+            if not dept_log.is_file() and stall_key not in live.get("nudged", []):
+                text = (
+                    f"[Lab runtime] Department '{target_dept}' investigations are complete. "
+                    f"Please instruct the {target_dept} Lead to finalize its decision, have {target_dept}_secretary "
+                    f"write the department log and provide the 8-heading briefing, then proceed."
+                )
+                subprocess.run(["tmux", "send-keys", "-t", _tmux_name(run_id), "-l", text], check=False)
+                subprocess.run(["tmux", "send-keys", "-t", _tmux_name(run_id), "Enter"], check=False)
+                live["nudged"] = live.get("nudged", []) + [stall_key]
+                (run_dir / "live.json").write_text(json.dumps(live), encoding="utf-8")
+                with open(run_dir / "runtime.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"t": time.time(), "kind": "nudge", "text": text}, ensure_ascii=False) + "\n")
+                return text
+
+    return None
 
 
 def _watchdog_loop() -> None:

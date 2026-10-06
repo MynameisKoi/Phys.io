@@ -9,7 +9,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app.api import live
-from app import main as main_module
+import app.main as main_module
 from app.main import app
 
 
