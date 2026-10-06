@@ -74,7 +74,14 @@ def _check_code(code: str | None) -> None:
 def _active_runs() -> list[str]:
     if not RUNS.is_dir():
         return []
-    return [d.name for d in RUNS.iterdir() if d.is_dir() and RUN_ID_RE.match(d.name) and _tmux_alive(d.name)]
+    active = []
+    for d in RUNS.iterdir():
+        if d.is_dir() and RUN_ID_RE.match(d.name) and _tmux_alive(d.name):
+            if (d / "final_report.md").is_file():
+                subprocess.run(["tmux", "kill-session", "-t", _tmux_name(d.name)], capture_output=True)
+                continue
+            active.append(d.name)
+    return active
 
 
 def _run_dir(run_id: str, must_exist: bool = True) -> Path:
@@ -174,14 +181,15 @@ def runs() -> list[dict]:
         if not d.is_dir() or not RUN_ID_RE.match(d.name) or d.name == "example":
             continue
         problem = _read_json(d / "problem.json")
+        has_report = (d / "final_report.md").is_file()
         out.append({
             "id": d.name,
             "problem": problem.get("problem"),
             "started_at": problem.get("started_at") or d.stat().st_mtime,
             "records": len(_read_jsonl(d / "record.jsonl")),
             "experiments": len(list((d / "experiments").glob("*/results.csv"))) if (d / "experiments").is_dir() else 0,
-            "has_report": (d / "final_report.md").is_file(),
-            "running": _tmux_alive(d.name),
+            "has_report": has_report,
+            "running": _tmux_alive(d.name) and not has_report,
         })
     return sorted(out, key=lambda r: r["started_at"] or 0, reverse=True)
 
@@ -338,6 +346,10 @@ def _latest_department_entry(run_dir: Path) -> dict | None:
 def _watchdog_check(run_id: str) -> str | None:
     """Nudge the Director of one run if it missed a department decision or if a department stalled."""
     run_dir = RUNS / run_id
+    if (run_dir / "final_report.md").is_file():
+        if _tmux_alive(run_id):
+            subprocess.run(["tmux", "kill-session", "-t", _tmux_name(run_id)], capture_output=True)
+        return None
     root = _root_session(run_id, run_dir)
     if not root:
         return None
@@ -522,7 +534,7 @@ def activity(run_id: str, limit: int = 300) -> dict:
     return {
         "run_id": run_id,
         "problem": problem.get("problem"),
-        "running": _tmux_alive(run_id),
+        "running": _tmux_alive(run_id) and not (run_dir / "final_report.md").is_file(),
         "omnigent_connected": root is not None,
         "agents": agents,
         "events": events[-limit:],
